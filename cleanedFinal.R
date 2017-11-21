@@ -50,7 +50,7 @@ allstate=select(allstate,c('id','cat80',
 
 #separating into training and validation sets
 set.seed(478)
-split=sample(c(T,F),prob = c(70,30),replace = T,size=length(allstate$loss))
+split=sample(c(T,F),prob = c(.70,.30),replace = T,size=length(allstate$loss))
 allstate.train=allstate[split==T,]
 allstate.validation=allstate[split==F,]
 
@@ -103,7 +103,7 @@ PC.set.t=pca$x[,c(1:10)]
 PC.set.t=as.data.frame(cbind(PC.set.t,allstate.train$target))
 
 #random forest
-rf=randomForest(V11~.,data=PC.set.t,ntree=50, do.trace=TRUE)
+rf=randomForest(V11~.,data=PC.set.t,ntree=75, do.trace=TRUE,mtry=3)
 
 #creating correct validation variables from validation set
 xlevs.valid = lapply(allstate.cat.train[,sapply(allstate.cat.train, is.factor), drop = F], function(j){
@@ -125,13 +125,83 @@ rf.actual=exp(rf.pred)
 #rf mae
 rf.mae=sum(abs(allstate.validation$loss-rf.actual))/length(allstate.validation$loss)
 
-#ensemble
+#ensemble simple average
 ensemble.prediction=(rf.actual+xgb.pvalid.actual)/2
-
-#ensemble mae
+#ensemble simple average mae
 ensemble.mae=sum(abs(allstate.validation$loss-ensemble.prediction))/length(allstate.validation$loss)
 
+#####
+#ensemble training
+#so we have a trained xgboost and a trained rf
+#we can split validation into validation and test
+#validation will act as our new train, and test will act as the validation
+set.seed(478)
+test.split=sample(c(T,F),prob=c(.7,.3),size = length(allstate.validation$target),replace = TRUE)
+allstate.ensemble.train=allstate.validation[test.split==TRUE,]
+allstate.ensemble.val=allstate.validation[test.split==FALSE,]
+#data processing
+#xgb
+sparse_allstateensemble.train = sparse.model.matrix(target ~ . -id -loss -target, data=allstate.ensemble.train)
+ensemble.xgb.predT = predict(xgb,sparse_allstateensemble.train)
+ensemble.xgb.pred=exp(ensemble.xgb.predT)
+#rf
+allstate.ensemble.train.cat=as.data.frame(allstate.ensemble.train[,c(2,4:7,10:17,19:20,22,24:26)])
+fix.ensemble.train <- as.data.frame(model.matrix(~ . -1, data = allstate.ensemble.train.cat, xlev = xlevs.valid))
+fix.ensemble.train=as.data.frame(cbind(fix.ensemble.train,allstate.ensemble.train[,c(3,8,9,18,23)]))
+for(i in 115:119){
+  fix.ensemble.train[,i]=(fix.ensemble.train[,i]-min(fix.ensemble.train[,i]))/(max(fix.ensemble.train[,i])-min(fix.ensemble.train[,i]))
+}
 
+#matrix multiplication to score the validation data with the training pca's
+ensemble.rf.train=scale(fix.ensemble.train,pca$center,pca$scale) %*% pca$rotation
+ensemble.rf.train2=as.data.frame(ensemble.rf.train[,1:10])
+ensemble.rf.predT=predict(rf,ensemble.rf.train2,type='response')
+ensemble.rf.pred=exp(ensemble.rf.predT)
+
+#collecting data needed to train
+ensemble = as.data.frame(cbind(allstate.ensemble.train$target,ensemble.xgb.pred,ensemble.rf.pred))
+sparse_ens = sparse.model.matrix(V1 ~ . -V1, data=ensemble)
+#xgboost
+ensemble.xgb = xgboost(data=sparse_ens,
+                       label = ensemble$V1,
+                       eta = 0.02,
+                       max_depth = 3,
+                       gamma = 6,
+                       nround=2000,
+                       subsample = 0.8,
+                       colsample_bytree = 0.8,
+                       objective = "reg:linear",
+                       nthread = 3,
+                       eval_metric = 'mae',
+                       verbose = 1)
+
+#data processing
+sparse_allstateensemble.val = sparse.model.matrix(target ~ . -id -loss -target, data=allstate.ensemble.val)
+ensemble.xgb.predT.val = predict(xgb,sparse_allstateensemble.val)
+ensemble.xgb.pred.val=exp(ensemble.xgb.predT.val)
+#rf
+allstate.ensemble.val.cat=as.data.frame(allstate.ensemble.val[,c(2,4:7,10:17,19:20,22,24:26)])
+fix.ensemble.val <- as.data.frame(model.matrix(~ . -1, data = allstate.ensemble.val.cat, xlev = xlevs.valid))
+fix.ensemble.val=as.data.frame(cbind(fix.ensemble.val,allstate.ensemble.val[,c(3,8,9,18,23)]))
+for(i in 115:119){
+  fix.ensemble.val[,i]=(fix.ensemble.val[,i]-min(fix.ensemble.val[,i]))/(max(fix.ensemble.val[,i])-min(fix.ensemble.val[,i]))
+}
+
+#matrix multiplication to score the validation data with the training pca's
+ensemble.rf.train.val=scale(fix.ensemble.val,pca$center,pca$scale) %*% pca$rotation
+ensemble.rf.train2.val=as.data.frame(ensemble.rf.train.val[,1:10])
+ensemble.rf.predT.val=predict(rf,ensemble.rf.train2.val,type='response')
+ensemble.rf.pred.val=exp(ensemble.rf.predT.val)
+
+#collecting data needed to validate
+ensemble.val = as.data.frame(cbind(allstate.ensemble.val$target,ensemble.xgb.pred.val,ensemble.rf.pred.val))
+sparse_ens.test = sparse.model.matrix(V1 ~ . -V1, data=ensemble.val)
+
+#predictions
+ensemble.predT = predict(ensemble.xgb,sparse_ens.test)
+ensemble.pred=exp(ensemble.predT)
+#xgboost ensemble mae
+xgb.ensemble.mae=sum(abs(allstate.ensemble.val$loss-ensemble.pred))/length(allstate.ensemble.val$loss)
 
 
 #######################
@@ -220,7 +290,7 @@ PC.set.final=pca$x[,c(1:10)]
 PC.set.final=as.data.frame(cbind(PC.set,allstate$target))
 
 #random forest
-rf.final=randomForest(V11~.,data=PC.set.final,ntree=50, do.trace=TRUE)
+rf.final=randomForest(V11~.,data=PC.set.final,ntree=75, do.trace=TRUE,mtry=3)
 
 #creating correct validation variables from test set
 #subset into categorical and continuous
@@ -236,7 +306,6 @@ fix.test=as.data.frame(cbind(fix.test,allstate.test[,c(3,8,9,18,23)]))
 for(i in 115:119){
   fix.test[,i]=(fix.test[,i]-min(fix.test[,i]))/(max(fix.test[,i])-min(fix.test[,i]))
 }
-
 
 #matrix multiplication to score the validation data with the training pca's
 rf.test=scale(fix.test,pca$center,pca$scale) %*% pca$rotation
