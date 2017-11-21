@@ -85,22 +85,17 @@ mae.xgb=sum(abs(allstate.validation$loss - xgb.pvalid.actual))/length(xgb.pvalid
 
 #random forest model
 #first we create a design matrix
-#all categorical variables become binary flags for each category
+#cat57 (column 21) is dropped because it only has one level in the test set
+allstate.cat.train=as.data.frame(allstate.train[,c(2,4:7,10:17,19:20,22,24:26)])
+fix.train=as.data.frame(model.matrix(~.-1,data = allstate.cat.train))
+#then we add the range standardized continuous variables
+fix.train=as.data.frame(cbind(fix.train,allstate.train[,c(3,8,9,18,23)]))
+for(i in 115:119){
+  fix.train[,i]=(fix.train[,i]-min(fix.train[,i]))/(max(fix.train[,i])-min(fix.train[,i]))
+}
 
-design.t=as.data.frame(model.matrix(~allstate.train[[2]]-1))
-for(i in c(4:7,10:17,19:22,24:26)){
-  column.t=as.data.frame(model.matrix(~allstate.train[[i]]-1))
-  design.t = as.data.frame(cbind(design.t,column.t))
-}
-design.t=as.data.frame(cbind(design.t,allstate.train[,c(3,8,9,18,23)]))
-#all numeric variables will be range standardized
-design.t[,135]=(design.t[,135]-min(design.t[,135]))/(max(design.t[,135])-min(design.t[,135]))
-#summary(design[,135]) check my range standardization
-for(i in 136:139){
-  design.t[,i]=(design.t[,i]-min(design.t[,i]))/(max(design.t[,i])-min(design.t[,i]))
-}
 #now do the pca on the covariance matrix
-pca=prcomp(design.t,scale=F)
+pca=prcomp(fix.train,scale=F)
 plot(pca)
 PC.set.t=pca$x[,c(1:10)]
 
@@ -108,22 +103,21 @@ PC.set.t=pca$x[,c(1:10)]
 PC.set.t=as.data.frame(cbind(PC.set.t,allstate.train$target))
 
 #random forest
-rf=randomForest(allstate.train$target~.,data=PC.set.t,ntree=200, do.trace=TRUE)
+rf=randomForest(V11~.,data=PC.set.t,ntree=50, do.trace=TRUE)
 
 #creating correct validation variables from validation set
-design.v=as.data.frame(model.matrix(~allstate.validation[[2]]-1))
-for(i in c(4:7,10:17,19:22,24:26)){
-  column.v=as.data.frame(model.matrix(~allstate.validation[[i]]-1))
-  design.v = as.data.frame(cbind(design.v,column.v))
+xlevs.valid = lapply(allstate.cat.train[,sapply(allstate.cat.train, is.factor), drop = F], function(j){
+  levels(j)
+})
+allstate.validation.cat=as.data.frame(allstate.validation[,c(2,4:7,10:17,19:20,22,24:26)])
+fix.validation <- as.data.frame(model.matrix(~ . -1, data = allstate.validation.cat, xlev = xlevs.valid))
+fix.validation=as.data.frame(cbind(fix.validation,allstate.validation[,c(3,8,9,18,23)]))
+for(i in 115:119){
+  fix.validation[,i]=(fix.validation[,i]-min(fix.validation[,i]))/(max(fix.validation[,i])-min(fix.validation[,i]))
 }
-design.v=as.data.frame(cbind(design.v,allstate.validation[,c(3,8,9,18,23)]))
-design.v[,135]=(design.v[,135]-min(design.v[,135]))/(max(design.v[,135])-min(design.v[,135]))
-#summary(design[,135]) check my range standardization
-for(i in 136:139){
-  design.v[,i]=(design.v[,i]-min(design.v[,i]))/(max(design.v[,i])-min(design.v[,i]))
-}
+
 #matrix multiplication to score the validation data with the training pca's
-rf.v=scale(design.v,pca$center,pca$scale) %*% pca$rotation
+rf.v=scale(fix.validation,pca$center,pca$scale) %*% pca$rotation
 rf.v.2=as.data.frame(rf.v[,1:10])
 rf.pred=predict(rf,rf.v.2,type='response')
 rf.actual=exp(rf.pred)
@@ -137,8 +131,12 @@ ensemble.prediction=(rf.actual+xgb.pvalid.actual)/2
 #ensemble mae
 ensemble.mae=sum(abs(allstate.validation$loss-ensemble.prediction))/length(allstate.validation$loss)
 
+
+
+
+#######################
 #recreating model on all data
-#loading test data
+#loading the test data
 allstate.test=read_csv("~/NC State Files/Fall/Machine Learning/Project/allstate_test.csv")
 
 for(i in 2:117){
@@ -202,52 +200,56 @@ xgb.final <- xgboost(data = allstate_sparse,
 xgb.predictions.transformed=predict(xgb.final,allstate_sparse.test)
 xgb.predictions=exp(xgb.predictions.transformed)
 
+#write xgb predictions to csv
+write_csv(data.frame(cbind(allstate.test$id,xgb.predictions)),path="xgb.predictions.csv")
+
 #random forest
-design=as.data.frame(model.matrix(~allstate[[2]]-1))
-for(i in c(4:7,10:17,19:20,22,24:26)){
-  column=as.data.frame(model.matrix(~allstate[[i]]-1))
-  design = as.data.frame(cbind(design,column))
+allstate.cat=as.data.frame(allstate[,c(2,4:7,10:17,19:20,22,24:26)])
+fix.final=as.data.frame(model.matrix(~.-1,data = allstate.cat))
+fix.final=as.data.frame(cbind(fix.race,allstate[,c(3,8,9,18,23)]))
+for(i in 115:119){
+  fix.final[,i]=(fix.final[,i]-min(fix.final[,i]))/(max(fix.final[,i])-min(fix.final[,i]))
 }
-design=as.data.frame(cbind(design,allstate[,c(3,8,9,18,23)]))
-#all numeric variables will be range standardized
-design[,133]=(design[,133]-min(design[,133]))/(max(design[,133])-min(design[,133]))
-#summary(design[,135]) check my range standardization
-for(i in 133:137){
-  design[,i]=(design[,i]-min(design[,i]))/(max(design[,i])-min(design[,i]))
-}
+
 #now do the pca on the covariance matrix
-pca=prcomp(design,scale=F)
+pca=prcomp(fix.final,scale=F)
 plot(pca)
-PC.set=pca$x[,c(1:10)]
+PC.set.final=pca$x[,c(1:10)]
 
 #add the target variable to the dataset
-PC.set=as.data.frame(cbind(PC.set,allstate$target))
+PC.set.final=as.data.frame(cbind(PC.set,allstate$target))
 
 #random forest
-rf.final=randomForest(V11~.,data=PC.set,ntree=200, do.trace=TRUE)
+rf.final=randomForest(V11~.,data=PC.set.final,ntree=50, do.trace=TRUE)
 
-#creating correct validation variables from validation set
-design.test=as.data.frame(model.matrix(~allstate.test[[2]]-1))
-for(i in c(4:7,10:17,19:20,22,24:26)){
-  column.test=as.data.frame(model.matrix(~allstate.test[[i]]-1))
-  design.test = as.data.frame(cbind(design.test,column.test))
+#creating correct validation variables from test set
+#subset into categorical and continuous
+#run xlevs for categorical
+#cbind standardized continous
+xlevs = lapply(allstate.cat[,sapply(allstate.cat, is.factor), drop = F], function(j){
+  levels(j)
+})
+allstate.test$loss=1:100
+allstate.test.cat=as.data.frame(allstate.test[,c(2,4:7,10:17,19:20,22,24:26)])
+fix.test <- as.data.frame(model.matrix(~ . -1, data = allstate.test.cat, xlev = xlevs))
+fix.test=as.data.frame(cbind(fix.test,allstate.test[,c(3,8,9,18,23)]))
+for(i in 115:119){
+  fix.test[,i]=(fix.test[,i]-min(fix.test[,i]))/(max(fix.test[,i])-min(fix.test[,i]))
 }
-design.test=as.data.frame(cbind(design.test,allstate.test[,c(3,8,9,18,23)]))
-#this looks like there aren't as many levels in the test set. Interesting
-#could pose a problem for the PCA solution here. I shall ask
-design.test[,135]=(design.test[,135]-min(design.test[,135]))/(max(design.test[,135])-min(design.test[,135]))
-#summary(design[,135]) check my range standardization
-for(i in 136:139){
-  design.test[,i]=(design.test[,i]-min(design.test[,i]))/(max(design.test[,i])-min(design.test[,i]))
-}
+
+
 #matrix multiplication to score the validation data with the training pca's
-rf.test=scale(design.test,pca$center,pca$scale) %*% pca$rotation
+rf.test=scale(fix.test,pca$center,pca$scale) %*% pca$rotation
 rf.test.2=as.data.frame(rf.test[,1:10])
 rf.predictions.transformed=predict(rf.final,rf.test.2,type='response')
 rf.predictions=exp(rf.predictions.transformed)
+
+#write to csv the random forest predictions
+write_csv(data.frame(cbind(allstate.test$id,rf.predictions)),path="rf.predictions.csv")
+
 
 #ensemble predictions
 ensemble.predictions.final = (xgb.predictions+rf.predictions)/2
 
 #write to csv
-csv.predictions=cbind(allstate.test$id,ensemble.predictions.final)
+write_csv(data.frame(cbind(allstate.test$id,ensemble.predictions.final)),path="ensemble.predictions.csv")
