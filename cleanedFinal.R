@@ -95,9 +95,9 @@ for(i in 115:119){
 }
 
 #now do the pca on the covariance matrix
-pca=prcomp(fix.train,scale=F)
-plot(pca)
-PC.set.t=pca$x[,c(1:10)]
+pca.train=prcomp(fix.train,scale=F)
+plot(pca.train)
+PC.set.t=pca.train$x[,c(1:10)]
 
 #add the target variable to the dataset
 PC.set.t=as.data.frame(cbind(PC.set.t,allstate.train$target))
@@ -167,7 +167,7 @@ ensemble.xgb = xgboost(data=sparse_ens,
                        eta = 0.02,
                        max_depth = 3,
                        gamma = 6,
-                       nround=2000,
+                       nround=2500,
                        subsample = 0.8,
                        colsample_bytree = 0.8,
                        objective = "reg:linear",
@@ -188,7 +188,7 @@ for(i in 115:119){
 }
 
 #matrix multiplication to score the validation data with the training pca's
-ensemble.rf.train.val=scale(fix.ensemble.val,pca$center,pca$scale) %*% pca$rotation
+ensemble.rf.train.val=scale(fix.ensemble.val,pca.train$center,pca.train$scale) %*% pca.train$rotation
 ensemble.rf.train2.val=as.data.frame(ensemble.rf.train.val[,1:10])
 ensemble.rf.predT.val=predict(rf,ensemble.rf.train2.val,type='response')
 ensemble.rf.pred.val=exp(ensemble.rf.predT.val)
@@ -241,7 +241,7 @@ allstate.test=select(allstate.test,c('id','cat80',
 #sparse allstate test
 #not sure I need this
 #allstate.test$target=numeric(length = length(allstate.test$id))
-allstate_sparse.test= sparse.model.matrix(~.-id,data=allstate.test)
+#allstate_sparse.test= sparse.model.matrix(~.-id,data=allstate.test)
 #^throwing an error bc cat57 only has one level
 allstate.test.xgb=allstate.test[,c(1:20,22:26)]
 allstate_sparse.test=sparse.model.matrix(~.-id,data=allstate.test.xgb)
@@ -276,18 +276,18 @@ write_csv(data.frame(cbind(allstate.test$id,xgb.predictions)),path="xgb.predicti
 #random forest
 allstate.cat=as.data.frame(allstate[,c(2,4:7,10:17,19:20,22,24:26)])
 fix.final=as.data.frame(model.matrix(~.-1,data = allstate.cat))
-fix.final=as.data.frame(cbind(fix.race,allstate[,c(3,8,9,18,23)]))
+fix.final=as.data.frame(cbind(fix.final,allstate[,c(3,8,9,18,23)]))
 for(i in 115:119){
   fix.final[,i]=(fix.final[,i]-min(fix.final[,i]))/(max(fix.final[,i])-min(fix.final[,i]))
 }
 
 #now do the pca on the covariance matrix
-pca=prcomp(fix.final,scale=F)
-plot(pca)
-PC.set.final=pca$x[,c(1:10)]
+pca.final=prcomp(fix.final,scale=F)
+#plot(pca)
+PC.set.final=pca.final$x[,c(1:10)]
 
 #add the target variable to the dataset
-PC.set.final=as.data.frame(cbind(PC.set,allstate$target))
+PC.set.final=as.data.frame(cbind(PC.set.final,allstate$target))
 
 #random forest
 rf.final=randomForest(V11~.,data=PC.set.final,ntree=75, do.trace=TRUE,mtry=3)
@@ -308,7 +308,7 @@ for(i in 115:119){
 }
 
 #matrix multiplication to score the validation data with the training pca's
-rf.test=scale(fix.test,pca$center,pca$scale) %*% pca$rotation
+rf.test=scale(fix.test,pca.final$center,pca.final$scale) %*% pca.final$rotation
 rf.test.2=as.data.frame(rf.test[,1:10])
 rf.predictions.transformed=predict(rf.final,rf.test.2,type='response')
 rf.predictions=exp(rf.predictions.transformed)
@@ -317,8 +317,53 @@ rf.predictions=exp(rf.predictions.transformed)
 write_csv(data.frame(cbind(allstate.test$id,rf.predictions)),path="rf.predictions.csv")
 
 
-#ensemble predictions
+#ensemble simple average predictions
 ensemble.predictions.final = (xgb.predictions+rf.predictions)/2
-
 #write to csv
-write_csv(data.frame(cbind(allstate.test$id,ensemble.predictions.final)),path="ensemble.predictions.csv")
+write_csv(data.frame(cbind(allstate.test$id,ensemble.predictions.final)),path="ensemble_average_predictions.csv")
+
+#ensemble xgboost predictions
+
+#collecting data needed to train
+ensemble.f = as.data.frame(cbind(allstate.xgb$target,xgb.predictions,rf.predictions))
+sparse_ens.f = sparse.model.matrix(V1 ~ . -V1, data=ensemble.f)
+#xgboost
+ensemble.xgb = xgboost(data=sparse_ens.f,
+                       label = ensemble.f$V1,
+                       eta = 0.02,
+                       max_depth = 3,
+                       gamma = 6,
+                       nround=2500,
+                       subsample = 0.8,
+                       colsample_bytree = 0.8,
+                       objective = "reg:linear",
+                       nthread = 3,
+                       eval_metric = 'mae',
+                       verbose = 1)
+
+#data processing
+sparse_allstateensemble.test = sparse.model.matrix( ~ . -id, data=allstate.test.xgb)
+ensemble.xgb.predT.test = predict(xgb.final,sparse_allstateensemble.test)
+ensemble.xgb.pred.test=exp(ensemble.xgb.predT.test)
+#rf
+allstate.ensemble.test.cat=as.data.frame(allstate.test[,c(2,4:7,10:17,19:20,22,24:26)])
+fix.ensemble.test <- as.data.frame(model.matrix(~ . -1, data = allstate.ensemble.test.cat, xlev = xlevs))
+fix.ensemble.test=as.data.frame(cbind(fix.ensemble.test,allstate.test[,c(3,8,9,18,23)]))
+for(i in 115:119){
+  fix.ensemble.test[,i]=(fix.ensemble.test[,i]-min(fix.ensemble.test[,i]))/(max(fix.ensemble.test[,i])-min(fix.ensemble.test[,i]))
+}
+
+#matrix multiplication to score the validation data with the training pca's
+ensemble.rf.test=scale(fix.ensemble.test,pca.final$center,pca.final$scale) %*% pca.final$rotation
+ensemble.rf.test2=as.data.frame(ensemble.rf.test[,1:10])
+ensemble.rf.predT.test=predict(rf.final,ensemble.rf.test2,type='response')
+ensemble.rf.pred.test=exp(ensemble.rf.predT.test)
+
+#collecting data
+ensemble.final = as.data.frame(cbind(allstate.xgb$target,ensemble.xgb.pred.test,ensemble.rf.pred.test))
+sparse_ens.test = sparse.model.matrix(V1 ~ . -V1, data=ensemble.final)
+#predictions
+ensemble.xgb.predictions.t = predict(ensemble.xgb,sparse_ens.test)
+ensemble.xgb.predictions = exp(ensemble.xgb.predictions.t)
+#write to csv
+write_csv(data.frame(cbind(allstate.test$id,ensemble.xgb.predictions)),path="ensemble_xgb_predictions.csv")
